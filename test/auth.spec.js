@@ -1,7 +1,3 @@
-// YOU WRITE THIS
-// Run with: npm test
-// Pattern: describe('endpoint') > it('expected behavior')
-
 const chai = require('chai');
 const chaiHttp = require('chai-http');
 const app = require('../src/app');
@@ -9,35 +5,78 @@ const app = require('../src/app');
 chai.use(chaiHttp);
 const { expect } = chai;
 
-// Unique email per test run so tests don't conflict with each other
-const testEmail = `test_${Date.now()}@example.com`;
+// Unique email per test run so tests never conflict with each other
+const uniqueEmail = () => `test_${Date.now()}_${Math.random().toString(36).slice(2)}@example.com`;
 
 describe('POST /auth/register', () => {
   it('should register a new user and return a token', async () => {
-    // STEP 1: Make a POST request to /auth/register with { email: testEmail, password: '123456' }
-    //   const res = await chai.request(app).post('/auth/register').send({ email: testEmail, password: '123456' });
+    const res = await chai.request(app)
+      .post('/auth/register')
+      .send({ email: uniqueEmail(), password: 'password123' });
 
-    // STEP 2: Assert the response.
-    //   expect(res).to.have.status(201);
-    //   expect(res.body).to.have.property('token');
-    //   expect(res.body.token).to.be.a('string');
+    expect(res).to.have.status(201);
+    expect(res.body).to.have.property('token');
+    expect(res.body.token).to.be.a('string');
   });
 
-  it('should return 400 if email or password is missing', async () => {
-    // Send a request without a password and expect 400.
+  it('should return 400 if email is missing', async () => {
+    const res = await chai.request(app)
+      .post('/auth/register')
+      .send({ password: 'password123' });
+
+    expect(res).to.have.status(400);
+  });
+
+  it('should return 400 if password is missing', async () => {
+    const res = await chai.request(app)
+      .post('/auth/register')
+      .send({ email: uniqueEmail() });
+
+    expect(res).to.have.status(400);
   });
 
   it('should return 409 if the email is already registered', async () => {
-    // Register twice with the same email and expect 409 on the second attempt.
+    const email = uniqueEmail();
+
+    await chai.request(app).post('/auth/register').send({ email, password: 'pass' });
+    const res = await chai.request(app).post('/auth/register').send({ email, password: 'pass' });
+
+    expect(res).to.have.status(409);
   });
 });
 
 describe('POST /auth/login', () => {
-  it('should login and return a token', async () => {
-    // Register first, then login with the same credentials and expect a token.
+  const email = uniqueEmail();
+  const password = 'testpass123';
+
+  // Register once before all login tests
+  before(async () => {
+    await chai.request(app).post('/auth/register').send({ email, password });
+  });
+
+  it('should login with correct credentials and return a token', async () => {
+    const res = await chai.request(app)
+      .post('/auth/login')
+      .send({ email, password });
+
+    expect(res).to.have.status(200);
+    expect(res.body).to.have.property('token');
+    expect(res.body.token).to.be.a('string');
   });
 
   it('should return 401 for wrong password', async () => {
-    // Login with a wrong password and expect 401.
+    const res = await chai.request(app)
+      .post('/auth/login')
+      .send({ email, password: 'wrongpassword' });
+
+    expect(res).to.have.status(401);
+  });
+
+  it('should return 401 for non-existent email', async () => {
+    const res = await chai.request(app)
+      .post('/auth/login')
+      .send({ email: 'nobody@example.com', password: 'pass' });
+
+    expect(res).to.have.status(401);
   });
 });

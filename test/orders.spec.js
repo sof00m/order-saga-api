@@ -1,7 +1,3 @@
-// YOU WRITE THIS
-// Tests the full saga lifecycle: create → advance (x3) → delivered
-// Also tests the failure/compensation path.
-
 const chai = require('chai');
 const chaiHttp = require('chai-http');
 const app = require('../src/app');
@@ -9,71 +5,166 @@ const app = require('../src/app');
 chai.use(chaiHttp);
 const { expect } = chai;
 
-// Helper: register a user and return the token
+const uniqueEmail = () => `order_test_${Date.now()}_${Math.random().toString(36).slice(2)}@example.com`;
+
+// Registers a user and returns their JWT token
 async function getToken() {
   const res = await chai.request(app)
     .post('/auth/register')
-    .send({ email: `order_test_${Date.now()}@example.com`, password: 'testpass' });
+    .send({ email: uniqueEmail(), password: 'testpass123' });
   return res.body.token;
 }
 
-describe('Order Saga — happy path', () => {
+const sampleItems = [{ name: 'Laptop', qty: 1, price: 999.99 }];
+
+// ─── Happy path ──────────────────────────────────────────────────────────────
+
+describe('Order Saga — happy path (PENDING → DELIVERED)', () => {
   let token;
   let orderId;
 
-  before(async () => {
-    // Get a token before all tests in this block run
-    token = await getToken();
+  before(async () => { token = await getToken(); });
+
+  it('POST /orders → status PENDING, saga_steps empty', async () => {
+    const res = await chai.request(app)
+      .post('/orders')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ items: sampleItems });
+
+    expect(res).to.have.status(201);
+    expect(res.body.status).to.equal('PENDING');
+    expect(res.body.saga_steps).to.be.an('array').with.lengthOf(0);
+    orderId = res.body.id;
   });
 
-  it('should create an order with status PENDING', async () => {
-    // POST /orders with items and the Bearer token.
-    // Assert status 201 and order.status === 'PENDING'.
-    // Save orderId = res.body.id for the next tests.
+  it('advance → PAYMENT_OK, payment step COMPLETED', async () => {
+    const res = await chai.request(app)
+      .post(`/orders/${orderId}/advance`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fail: false });
+
+    expect(res).to.have.status(200);
+    expect(res.body.status).to.equal('PAYMENT_OK');
+    expect(res.body.saga_steps).to.have.lengthOf(1);
+    expect(res.body.saga_steps[0].step_name).to.equal('payment');
+    expect(res.body.saga_steps[0].status).to.equal('COMPLETED');
   });
 
-  it('should advance to PAYMENT_OK', async () => {
-    // POST /orders/:orderId/advance with { fail: false }
-    // Assert order.status === 'PAYMENT_OK'
-    // Assert saga_steps has 1 completed step with step_name === 'payment'
+  it('advance → RESERVED', async () => {
+    const res = await chai.request(app)
+      .post(`/orders/${orderId}/advance`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fail: false });
+
+    expect(res).to.have.status(200);
+    expect(res.body.status).to.equal('RESERVED');
   });
 
-  it('should advance to RESERVED', async () => {
-    // Same, expect status 'RESERVED'
+  it('advance → SHIPPED', async () => {
+    const res = await chai.request(app)
+      .post(`/orders/${orderId}/advance`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fail: false });
+
+    expect(res).to.have.status(200);
+    expect(res.body.status).to.equal('SHIPPED');
   });
 
-  it('should advance to SHIPPED', async () => {
-    // Same, expect status 'SHIPPED'
+  it('advance → DELIVERED, all 3 steps COMPLETED', async () => {
+    const res = await chai.request(app)
+      .post(`/orders/${orderId}/advance`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fail: false });
+
+    expect(res).to.have.status(200);
+    expect(res.body.status).to.equal('DELIVERED');
+    expect(res.body.saga_steps).to.have.lengthOf(3);
   });
 
-  it('should advance to DELIVERED', async () => {
-    // Same, expect status 'DELIVERED'
+  it('advance on DELIVERED order → 400', async () => {
+    const res = await chai.request(app)
+      .post(`/orders/${orderId}/advance`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fail: false });
+
+    expect(res).to.have.status(400);
   });
 });
 
-describe('Order Saga — compensation (failure) path', () => {
+// ─── Compensation path ────────────────────────────────────────────────────────
+
+describe('Order Saga — compensation (fail → CANCELLED)', () => {
   let token;
   let orderId;
 
   before(async () => {
     token = await getToken();
+
+    // Create order and advance once so there is a step to compensate
+    const created = await chai.request(app)
+      .post('/orders')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ items: sampleItems });
+    orderId = created.body.id;
+
+    await chai.request(app)
+      .post(`/orders/${orderId}/advance`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fail: false });
   });
 
-  it('should create an order', async () => {
-    // Create a new order for the failure path test
+  it('fail=true → CANCELLED, step COMPENSATED with compensated_at timestamp', async () => {
+    const res = await chai.request(app)
+      .post(`/orders/${orderId}/advance`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fail: true });
+
+    expect(res).to.have.status(200);
+    expect(res.body.status).to.equal('CANCELLED');
+    expect(res.body.saga_steps[0].status).to.equal('COMPENSATED');
+    expect(res.body.saga_steps[0].compensated_at).to.not.be.null;
   });
 
-  it('should advance once (to PAYMENT_OK)', async () => {
-    // Advance once so there is at least one completed step to compensate
+  it('advance on CANCELLED order → 400', async () => {
+    const res = await chai.request(app)
+      .post(`/orders/${orderId}/advance`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fail: false });
+
+    expect(res).to.have.status(400);
+  });
+});
+
+// ─── Authorization ────────────────────────────────────────────────────────────
+
+describe('Order authorization', () => {
+  let token1;
+  let token2;
+  let orderId;
+
+  before(async () => {
+    token1 = await getToken();
+    token2 = await getToken();
+
+    const res = await chai.request(app)
+      .post('/orders')
+      .set('Authorization', `Bearer ${token1}`)
+      .send({ items: sampleItems });
+    orderId = res.body.id;
   });
 
-  it('should cancel and compensate when fail=true', async () => {
-    // POST /orders/:orderId/advance with { fail: true }
-    // Assert order.status === 'CANCELLED'
-    // Assert saga_steps contains a COMPENSATED step
+  it('should return 403 when accessing another user\'s order', async () => {
+    const res = await chai.request(app)
+      .get(`/orders/${orderId}`)
+      .set('Authorization', `Bearer ${token2}`);
+
+    expect(res).to.have.status(403);
   });
 
-  it('should not allow advancing a cancelled order', async () => {
-    // Try to advance a CANCELLED order and expect 400
+  it('should return 401 when no token provided', async () => {
+    const res = await chai.request(app)
+      .get(`/orders/${orderId}`);
+
+    expect(res).to.have.status(401);
   });
 });
