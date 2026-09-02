@@ -1,64 +1,46 @@
-# Order Saga API
+# order-saga-api
 
-A Node.js REST API demonstrating the **Saga orchestration pattern** for distributed order management.
+A Node.js REST API that manages order lifecycles using the **Saga orchestration pattern**. Each order moves through a sequence of steps (payment → inventory → shipping). If something goes wrong at any step, the orchestrator rolls back all previous steps automatically using compensating transactions.
 
-Each order flows through sequential steps (payment → inventory → shipping). If any step fails, the orchestrator automatically runs compensating transactions in reverse — guaranteeing consistency without a distributed lock.
+Built this to explore how distributed systems handle consistency without distributed locks — a pattern I kept running into at work.
 
-## Architecture
+## How it works
 
 ```
-routes/ → usecases/ → saga/orchestrator.js → SQLite
-                    ↘ saga/webhookDispatcher.js → subscribers
+POST /orders          →  creates order (status: PENDING)
+POST /orders/:id/advance  →  moves to next step
+POST /orders/:id/advance  { fail: true }  →  triggers compensation
+GET  /orders/:id/timeline  →  full audit log of what happened and when
 ```
 
-| Layer | Responsibility |
-|---|---|
-| `routes/` | HTTP, Swagger docs |
-| `usecases/` | Validation, authorization, orchestration calls |
-| `saga/orchestrator.js` | Saga state machine + compensation logic |
-| `saga/webhookDispatcher.js` | Event delivery with exponential backoff retry |
-| `db/database.js` | SQLite schema |
-
-## Saga states
-
+State machine:
 ```
 PENDING → PAYMENT_OK → RESERVED → SHIPPED → DELIVERED
-                ↓ (fail=true at any point)
+                ↓ (fail at any point)
           COMPENSATING → CANCELLED
 ```
 
-## Quick start
+Each state transition fires a webhook event to any registered subscribers, with exponential backoff retry on delivery failure.
+
+## Stack
+
+- Express + better-sqlite3 (no external database)
+- JWT auth with bcryptjs
+- Swagger docs at `/docs`
+- Mocha + Chai integration tests
+- GitHub Actions CI
+
+## Running locally
 
 ```bash
-cp .env.example .env   # set JWT_SECRET
+cp .env.example .env
 npm install
 npm run dev
 ```
 
-API docs at `http://localhost:3000/docs`
+Then open `http://localhost:3000/docs` to explore the API.
 
-## Endpoints
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| POST | /auth/register | — | Register, get JWT |
-| POST | /auth/login | — | Login, get JWT |
-| POST | /orders | ✓ | Create order (starts saga) |
-| GET | /orders/:id | ✓ | Order + saga steps |
-| POST | /orders/:id/advance | ✓ | Advance saga (`{ fail: true }` to simulate failure) |
-| GET | /orders/:id/timeline | ✓ | Full audit log |
-| POST | /webhooks | ✓ | Subscribe to order events |
-| GET | /webhooks/deliveries | ✓ | Delivery log with retry info |
-
-## Stack
-
-- **Express** — REST API
-- **better-sqlite3** — embedded database, zero external dependencies
-- **jsonwebtoken + bcryptjs** — auth
-- **Mocha + Chai** — integration tests
-- **GitHub Actions** — CI on every push
-
-## Running tests
+## Tests
 
 ```bash
 npm test
